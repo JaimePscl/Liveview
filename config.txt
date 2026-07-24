@@ -1,0 +1,10 @@
+framesize=13
+quality=12
+brightness=0
+contrast=0
+saturation=0
+hmirror=0
+vflip=1
+interval=10
+wbmode=0
+keepalive=0
