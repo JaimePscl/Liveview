@@ -1,0 +1,35 @@
+name: prune-history
+
+# Aplana TODO el historial a un solo commit. Como la galeria lee los 10
+# archivos foto0..9.jpg (presentes siempre), no depende del historial de git,
+# asi que podarlo no rompe nada y mantiene el .git pequeno.
+#
+# CAVEAT: borra TODA la historia de commits (tambien la del codigo fuente).
+# Si quieres conservar el historial del codigo, guardalo en otro repo/rama.
+#
+# Requiere: Settings -> Actions -> General -> Workflow permissions:
+#           "Read and write permissions".
+
+on:
+  workflow_dispatch:        # ejecutar a mano desde la pestaña Actions
+  schedule:
+    - cron: '17 4 * * *'    # y automatico, cada dia a las 04:17 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  squash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Squash all history into one commit
+        run: |
+          git config user.name "prune-bot"
+          git config user.email "prune-bot@users.noreply.github.com"
+          git checkout --orphan _flat
+          git add -A
+          git commit -m "snapshot (history pruned)"
+          git branch -D main
+          git branch -m main
+          git push -f origin main
