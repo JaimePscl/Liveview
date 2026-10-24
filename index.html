@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-CAM · Liveview</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111; color: #ccc;
+         font-family: system-ui, -apple-system, sans-serif;
+         display: flex; flex-direction: column; align-items: center; padding: 10px; }
+  #main { max-width: 800px; width: 100%; }
+  #main img { width: 100%; height: auto; display: block;
+              border-radius: 8px; background: #222; min-height: 60px; }
+  #thumbs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+            max-width: 800px; width: 100%; margin-top: 8px; }
+  #thumbs img { width: 100%; height: auto; display: block;
+                border-radius: 6px; background: #222; opacity: .85; }
+  #status { font-size: 12px; color: #666; margin-top: 10px; }
+  #cfglink { font-size: 13px; color: #6ab7ff; margin-top: 6px; text-decoration: none; }
+  #telemetry { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+               max-width: 800px; width: 100%; margin-top: 10px; }
+  .tcard { background: #1a1a1a; border-radius: 8px; padding: 10px; }
+  .tcard .tl { font-size: 11px; color: #777; }
+  .tcard .tv { font-size: 18px; color: #ddd; margin-top: 2px; }
+  .tcard .td { font-size: 11px; color: #888; margin-top: 2px;
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tcard details { margin-top: 4px; }
+  .tcard summary { font-size: 11px; color: #6ab7ff; cursor: pointer; list-style: none; }
+  .tcard summary::before { content: '▸ '; }
+  .tcard details[open] summary::before { content: '▾ '; }
+  .tcard ul { margin: 4px 0 0; padding-left: 14px; font-size: 11px; color: #999; }
+  .tcard li { margin-top: 2px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+         margin-right: 5px; vertical-align: 1px; }
+  .dot.on { background: #4caf50; } .dot.off { background: #e24b4a; }
+  #play { margin-top: 8px; background: #222; color: #ccc; border: none;
+          border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="main"><img id="foto" alt="ultima foto"></div>
+<div id="thumbs"></div>
+<div id="status">cargando…</div>
+<button id="play">▶ timelapse</button>
+<div id="telemetry">
+  <div class="tcard">
+    <div class="tl">WiFi</div>
+    <div class="tv" id="twifi"><span class="dot off"></span>–</div>
+    <div class="td" id="twifid"></div>
+    <details id="twifidet">
+      <summary>ver redes</summary>
+      <ul id="twifilist"></ul>
+    </details>
+  </div>
+  <div class="tcard">
+    <div class="tl">Bluetooth</div>
+    <div class="tv" id="tbt">–</div>
+    <details id="tbtdet">
+      <summary>ver dispositivos</summary>
+      <ul id="tbtlist"></ul>
+    </details>
+  </div>
+  <div class="tcard">
+    <div class="tl">Foto</div>
+    <div class="tv" id="tsize">–</div>
+    <div class="td" id="tsized"></div>
+  </div>
+</div>
+<a id="cfglink" href="config.html">⚙ configurar cámara</a>
+<script>
+  const SLOTS = 10;          // ranuras que mantiene el ESP32
+  const SHOWN = 5;           // principal + 4 miniaturas
+  const GRACE_MS = 3 * 60 * 1000; // margen antes de declarar "desconectado"
+
+  let intervalMs = 10 * 60 * 1000; // se actualiza con interval= de latest.txt
+  let lastUploadMs = null;   // hora real de la última subida (de latest.txt)
+  let curSlot = null;        // ranura mostrada actualmente
+  const seen = {};           // slot -> primera vez visto (fallback si no hay ts)
+
+  const two = n => String(n).padStart(2, '0');
+  const num = (txt, key) => { const m = txt.match(new RegExp(key + '=(-?\\d+)')); return m ? parseInt(m[1], 10) : null; };
+
+  function renderImages(newest) {
+    const t = Date.now();
+    const order = [];
+    for (let i = 0; i < SHOWN; i++) {
+      order.push(((newest - i) % SLOTS + SLOTS) % SLOTS);
+    }
+    document.getElementById('foto').src = 'fotos/foto' + order[0] + '.jpg?t=' + t;
+    const thumbs = document.getElementById('thumbs');
+    thumbs.innerHTML = '';
+    for (let i = 1; i < SHOWN; i++) {
+      const img = document.createElement('img');
+      img.src = 'fotos/foto' + order[i] + '.jpg?t=' + t;
+      img.alt = 'foto ' + order[i];
+      img.onerror = () => { img.style.display = 'none'; }; // ranura aún vacía
+      thumbs.appendChild(img);
+    }
+  }
+
+  // Lee latest.txt: nueva ranura + timestamp. Solo recarga imágenes al cambiar.
+  async function poll() {
+    try {
+      const r = await fetch('fotos/latest.txt?t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      const txt = await r.text();
+
+      let slot = 0, ts = null;
+      if (/slot=/.test(txt)) {
+        slot = num(txt, 'slot') ?? 0;
+        const v = num(txt, 'ts'); if (v > 0) ts = v * 1000;
+        const iv = num(txt, 'interval'); if (iv >= 1) intervalMs = iv * 60 * 1000;
+        renderTelemetry(txt);
+      } else {
+        slot = parseInt(txt.trim(), 10) || 0; // formato viejo: solo el número
+      }
+
+      if (slot !== curSlot) {
+        curSlot = slot;
+        if (!seen[slot]) seen[slot] = Date.now();
+        renderImages(slot);
+      }
+      // hora real si hay ts; si no, la primera vez que vimos esta foto
+      lastUploadMs = ts !== null ? ts : (seen[slot] || Date.now());
+    } catch (e) { /* ignora, reintenta al próximo poll */ }
+  }
+
+  // Rellena un <ul> con líneas (sin truncar); si vacío, muestra un placeholder.
+  function fillList(id, items, empty) {
+    const ul = document.getElementById(id);
+    ul.innerHTML = '';
+    (items.length ? items : [empty]).forEach(t => {
+      const li = document.createElement('li');
+      li.textContent = t;
+      ul.appendChild(li);
+    });
+  }
+
+  // Pinta las tarjetas de telemetría con los datos del último ciclo.
+  // La red propia se oculta; la lista muestra las demás redes detectadas.
+  function renderTelemetry(txt) {
+    const rssi = num(txt, 'rssi'), wifi = num(txt, 'wifi');
+    const bt = num(txt, 'bt'), size = num(txt, 'size');
+    const btnames = (txt.match(/btnames=(.*)/) || [])[1] || '';
+    const wifilist = (txt.match(/wifilist=(.*)/) || [])[1] || '';
+    if (wifi !== null) {
+      document.getElementById('twifid').textContent =
+        wifi + ' redes cerca' + (rssi !== null ? ' · señal ' + rssi + ' dBm' : '');
+      const nets = wifilist.trim() ? wifilist.trim().split(',').map(x => {
+        const i = x.lastIndexOf(':');
+        return i > 0 ? x.slice(0, i) + '  ·  ' + x.slice(i + 1) + ' dBm' : x;
+      }) : [];
+      fillList('twifilist', nets, 'sin otras redes visibles');
+    }
+    if (bt !== null) {
+      document.getElementById('tbt').textContent = bt + ' disp.';
+      const names = btnames.trim() ? btnames.trim().split(',').map(n => n.trim()) : [];
+      const items = names.slice();
+      if (bt > names.length) items.push((bt - names.length) + ' sin nombre visible');
+      fillList('tbtlist', items, 'ninguno publica nombre');
+    }
+    if (size !== null) {
+      document.getElementById('tsize').textContent = Math.round(size / 1024) + ' KB';
+      document.getElementById('tsized').textContent = 'último JPEG subido';
+    }
+  }
+
+  // Conectado = la última foto llegó dentro del intervalo esperado + margen.
+  function renderLink() {
+    const el = document.getElementById('twifi');
+    const on = lastUploadMs !== null && (Date.now() - lastUploadMs) < intervalMs + GRACE_MS;
+    el.innerHTML = '<span class="dot ' + (on ? 'on' : 'off') + '"></span>' +
+                   (on ? 'conectado' : 'desconectado');
+  }
+
+  // Actualiza el texto y la cuenta regresiva una vez por segundo.
+  function tick() {
+    const st = document.getElementById('status');
+    renderLink();
+    if (lastUploadMs === null) { st.textContent = 'esperando primera foto…'; return; }
+    const last = 'Última foto: ' + new Date(lastUploadMs).toLocaleTimeString();
+    const remaining = lastUploadMs + intervalMs - Date.now();
+    if (remaining > 0) {
+      const s = Math.floor(remaining / 1000);
+      st.textContent = last + ' · próxima en ' + two(Math.floor(s / 60)) + ':' + two(s % 60);
+    } else {
+      st.textContent = last + ' · subiendo próxima foto…';
+    }
+  }
+
+  // Timelapse: recorre las ranuras de la más vieja a la más nueva en la principal.
+  let playing = false;
+  document.getElementById('play').addEventListener('click', () => {
+    if (playing || curSlot === null) return;
+    playing = true;
+    const foto = document.getElementById('foto');
+    const t = Date.now();
+    let i = SLOTS - 1; // arranca en la más vieja
+    const step = () => {
+      const s = ((curSlot - i) % SLOTS + SLOTS) % SLOTS;
+      foto.src = 'fotos/foto' + s + '.jpg?t=' + t;
+      if (i-- > 0) setTimeout(step, 500);
+      else { playing = false; }
+    };
+    step();
+  });
+
+  poll(); setInterval(poll, 60000);
+  tick(); setInterval(tick, 1000);
+</script>
+</body>
+</html>
