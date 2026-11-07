@@ -1,0 +1,9 @@
+slot=7
+ts=1784343108
+interval=10
+size=34536
+rssi=-68
+wifi=11
+wifilist=Melody:-58,HERO8 Black:-62,Melody:-66,VTR-9225495:-78,Arreco:-91,VTR-9567145:-93,MBG-2.4G:-93,WiFi_Mesh-136202:-93,VTR-1069671:-95,BETEL:-95
+bt=10
+btnames=DESKTOP-ESC5J6D,LE-Bose Revolve SoundLink,LYWSD03MMC
