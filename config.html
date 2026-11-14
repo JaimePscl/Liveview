@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-CAM · Configuración</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111; color: #ddd;
+         font-family: system-ui, -apple-system, sans-serif;
+         display: flex; justify-content: center; padding: 16px; }
+  main { width: 100%; max-width: 440px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { color: #888; font-size: 13px; margin: 0 0 16px; }
+  a { color: #6ab7ff; }
+  label { display: block; margin: 14px 0 4px; font-size: 14px; }
+  select, input[type=number], input[type=password] {
+    width: 100%; padding: 8px; background: #1c1c1c; color: #eee;
+    border: 1px solid #333; border-radius: 6px; font-size: 14px; }
+  input[type=range] { width: 100%; }
+  .row { display: flex; gap: 16px; }
+  .row > div { flex: 1; }
+  .val { float: right; color: #888; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .check input { width: auto; }
+  .warn { background: #2a1e0a; border: 1px solid #5a3d0a; color: #d8b35a;
+          font-size: 12px; padding: 10px; border-radius: 6px; margin: 16px 0; }
+  button { margin-top: 18px; width: 100%; padding: 11px; font-size: 15px;
+           border: none; border-radius: 6px; cursor: pointer; }
+  #save { background: #2e7d32; color: #fff; }
+  #reload { background: #333; color: #ddd; margin-top: 8px; }
+  #forget { background: none; color: #888; text-decoration: underline;
+            border: none; cursor: pointer; font-size: 12px; margin-top: 8px; }
+  #status { margin-top: 14px; font-size: 13px; min-height: 18px; }
+  .ok { color: #6bd06b; } .err { color: #ff6b6b; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Configuración de la cámara</h1>
+  <p class="sub"><a href="index.html">← ver fotos</a> · los cambios se aplican
+    en el próximo ciclo del ESP32 (hasta ~10 min).</p>
+
+  <label>Resolución</label>
+  <select id="framesize">
+    <option value="5">QVGA · 320×240</option>
+    <option value="8">VGA · 640×480</option>
+    <option value="9">SVGA · 800×600</option>
+    <option value="10">XGA · 1024×768</option>
+    <option value="11">HD · 1280×720</option>
+    <option value="12">SXGA · 1280×1024</option>
+    <option value="13">UXGA · 1600×1200</option>
+  </select>
+
+  <label>Calidad JPEG <span class="val" id="qualityVal"></span></label>
+  <input type="range" id="quality" min="10" max="63" step="1">
+  <p class="sub" style="margin-top:2px">10 = mejor (archivo grande) · 63 = peor (archivo chico)</p>
+
+  <div class="row">
+    <div>
+      <label>Brillo <span class="val" id="brightnessVal"></span></label>
+      <input type="range" id="brightness" min="-2" max="2" step="1">
+    </div>
+    <div>
+      <label>Contraste <span class="val" id="contrastVal"></span></label>
+      <input type="range" id="contrast" min="-2" max="2" step="1">
+    </div>
+  </div>
+
+  <label>Saturación <span class="val" id="saturationVal"></span></label>
+  <input type="range" id="saturation" min="-2" max="2" step="1">
+
+  <div class="check"><input type="checkbox" id="hmirror"><label style="margin:0">Espejo horizontal</label></div>
+  <div class="check"><input type="checkbox" id="vflip"><label style="margin:0">Voltear vertical</label></div>
+
+  <label>Balance de blancos</label>
+  <select id="wbmode">
+    <option value="0">Auto</option>
+    <option value="1">Soleado</option>
+    <option value="2">Nublado</option>
+    <option value="3">Oficina (fluorescente)</option>
+    <option value="4">Hogar (incandescente)</option>
+  </select>
+
+  <label>Intervalo entre fotos (minutos)</label>
+  <input type="number" id="interval" min="1" max="1440" step="1">
+
+  <div class="check"><input type="checkbox" id="keepalive"><label style="margin:0">Modo power bank (evita que el banco se apague)</label></div>
+  <p class="sub" style="margin-top:2px">Duerme en tramos cortos con pulsos de consumo. Gasta algo más de energía; usalo solo si el banco corta la salida.</p>
+
+  <div class="warn">
+    El token vive solo en <b>este navegador</b> (localStorage), nunca se sube al
+    repo. Usá un token fine-grained limitado a este repo con <b>Contents: Read
+    and write</b>. Podés revocarlo cuando quieras desde GitHub.
+  </div>
+
+  <label>Token de GitHub</label>
+  <input type="password" id="token" placeholder="github_pat_...">
+  <div class="check"><input type="checkbox" id="remember"><label style="margin:0">Recordar en este navegador</label></div>
+
+  <button id="save">Guardar</button>
+  <button id="reload">Recargar valores actuales</button>
+  <button id="forget">Olvidar token guardado</button>
+
+  <div id="status"></div>
+</main>
+
+<script>
+  const OWNER = "JaimePscl";
+  const REPO  = "Liveview";
+  const API = "https://api.github.com/repos/" + OWNER + "/" + REPO + "/contents/config.txt";
+
+  const FIELDS = ["framesize","quality","brightness","contrast","saturation","hmirror","vflip","interval","wbmode","keepalive"];
+  const $ = id => document.getElementById(id);
+  const status = (msg, cls) => { const s = $("status"); s.textContent = msg; s.className = cls || ""; };
+
+  // Sincroniza los valores mostrados junto a los sliders.
+  ["quality","brightness","contrast","saturation"].forEach(id => {
+    const upd = () => { const v = $(id + "Val"); if (v) v.textContent = $(id).value; };
+    $(id).addEventListener("input", upd);
+  });
+
+  function setForm(cfg) {
+    $("framesize").value  = cfg.framesize ?? 9;
+    $("quality").value    = cfg.quality ?? 12;
+    $("brightness").value = cfg.brightness ?? 0;
+    $("contrast").value   = cfg.contrast ?? 0;
+    $("saturation").value = cfg.saturation ?? 0;
+    $("hmirror").checked  = (cfg.hmirror ?? 0) == 1;
+    $("vflip").checked    = (cfg.vflip ?? 0) == 1;
+    $("interval").value   = cfg.interval ?? 10;
+    $("wbmode").value     = cfg.wbmode ?? 0;
+    $("keepalive").checked = (cfg.keepalive ?? 0) == 1;
+    ["quality","brightness","contrast","saturation"].forEach(id => $(id).dispatchEvent(new Event("input")));
+  }
+
+  function readForm() {
+    return {
+      framesize:  parseInt($("framesize").value, 10),
+      quality:    parseInt($("quality").value, 10),
+      brightness: parseInt($("brightness").value, 10),
+      contrast:   parseInt($("contrast").value, 10),
+      saturation: parseInt($("saturation").value, 10),
+      hmirror:    $("hmirror").checked ? 1 : 0,
+      vflip:      $("vflip").checked ? 1 : 0,
+      interval:   Math.min(1440, Math.max(1, parseInt($("interval").value, 10) || 10)),
+      wbmode:     parseInt($("wbmode").value, 10) || 0,
+      keepalive:  $("keepalive").checked ? 1 : 0
+    };
+  }
+
+  function toText(cfg) {
+    return FIELDS.map(k => k + "=" + cfg[k]).join("\n") + "\n";
+  }
+
+  function parseText(txt) {
+    const cfg = {};
+    txt.split("\n").forEach(line => {
+      const i = line.indexOf("=");
+      if (i > 0) cfg[line.slice(0, i).trim()] = parseInt(line.slice(i + 1), 10);
+    });
+    return cfg;
+  }
+
+  // Carga el config.txt actual (mismo origen que esta página, sin token).
+  async function loadCurrent() {
+    try {
+      const r = await fetch("config.txt?t=" + Date.now(), { cache: "no-store" });
+      if (r.ok) { setForm(parseText(await r.text())); status("Valores actuales cargados.", "ok"); }
+      else { status("No hay config.txt aún; mostrando defaults.", ""); }
+    } catch (e) { status("No se pudo leer config.txt: " + e.message, "err"); }
+  }
+
+  // Quita espacios y cualquier carácter no-ASCII imprimible (los headers HTTP
+  // solo aceptan Latin-1; al pegar a veces se cuelan caracteres invisibles).
+  function cleanToken(raw) {
+    return (raw || "").replace(/[^\x21-\x7E]/g, "");
+  }
+
+  async function save() {
+    const token = cleanToken($("token").value);
+    if (!token) { status("Falta el token.", "err"); return; }
+    if ($("remember").checked) localStorage.setItem("gh_token", token);
+
+    const content = btoa(toText(readForm()));
+    const headers = { "Authorization": "Bearer " + token, "Accept": "application/vnd.github+json" };
+    status("Guardando…", "");
+    try {
+      // sha actual (si existe) para poder sobrescribir
+      let sha = undefined;
+      const g = await fetch(API, { headers });
+      if (g.status === 200) sha = (await g.json()).sha;
+      else if (g.status !== 404) { status("Error leyendo sha: HTTP " + g.status, "err"); return; }
+
+      const body = { message: "update config", content };
+      if (sha) body.sha = sha;
+      const p = await fetch(API, { method: "PUT", headers, body: JSON.stringify(body) });
+      if (p.ok) status("Guardado ✔ Se aplica en el próximo ciclo del ESP32.", "ok");
+      else status("Error al guardar: HTTP " + p.status + " " + (await p.text()).slice(0, 120), "err");
+    } catch (e) { status("Error de red: " + e.message, "err"); }
+  }
+
+  $("save").addEventListener("click", save);
+  $("reload").addEventListener("click", loadCurrent);
+  $("forget").addEventListener("click", () => {
+    localStorage.removeItem("gh_token"); $("token").value = ""; $("remember").checked = false;
+    status("Token olvidado.", "");
+  });
+
+  // Init
+  const saved = cleanToken(localStorage.getItem("gh_token"));
+  if (saved) { $("token").value = saved; $("remember").checked = true; }
+  loadCurrent();
+</script>
+</body>
+</html>
